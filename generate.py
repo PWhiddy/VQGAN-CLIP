@@ -57,9 +57,10 @@ vq_parser = argparse.ArgumentParser(description='Image generation using VQGAN+CL
 
 # Add the arguments
 vq_parser.add_argument("-p",    "--prompts", type=str, help="Text prompts", default=None, dest='prompts')
+vq_parser.add_argument("-sk",    "--streamkey", type=str, help="yt streamkey", default='<PUTKEYHERE>', dest='streamkey')
 vq_parser.add_argument("-ip",   "--image_prompts", type=str, help="Image prompts / target image", default=[], dest='image_prompts')
-vq_parser.add_argument("-i",    "--iterations", type=int, help="Number of iterations", default=500, dest='max_iterations')
-vq_parser.add_argument("-se",   "--save_every", type=int, help="Save image iterations", default=50, dest='display_freq')
+vq_parser.add_argument("-i",    "--iterations", type=int, help="Number of iterations", default=9500, dest='max_iterations')
+vq_parser.add_argument("-se",   "--save_every", type=int, help="Save image iterations", default=550, dest='display_freq')
 vq_parser.add_argument("-s",    "--size", nargs=2, type=int, help="Image size (width height) (default: %(default)s)", default=[default_image_size,default_image_size], dest='size')
 vq_parser.add_argument("-ii",   "--init_image", type=str, help="Initial image", default=None, dest='init_image')
 vq_parser.add_argument("-in",   "--init_noise", type=str, help="Initial noise image (pixels or gradient)", default=None, dest='init_noise')
@@ -730,17 +731,17 @@ def ascend_txt():
     for prompt in pMs:
         result.append(prompt(iii))
     
-    if args.make_video:    
-        img = np.array(out.mul(255).clamp(0, 255)[0].cpu().detach().numpy().astype(np.uint8))[:,:,:]
-        img = np.transpose(img, (1, 2, 0))
-        imageio.imwrite('./steps/' + str(i) + '.png', np.array(img))
+    #if args.make_video:    
+    img = np.array(out.mul(255).clamp(0, 255)[0].cpu().detach().numpy().astype(np.uint8))[:,:,:]
+    img = np.transpose(img, (1, 2, 0))
+    #    imageio.imwrite('./steps/' + str(i) + '.png', np.array(img))
 
-    return result # return loss
+    return result, img # return loss
 
 
 def train(i):
     opt.zero_grad(set_to_none=True)
-    lossAll = ascend_txt()
+    lossAll, img = ascend_txt()
     
     if i % args.display_freq == 0:
         checkin(i, lossAll)
@@ -752,20 +753,21 @@ def train(i):
     #with torch.no_grad():
     with torch.inference_mode():
         z.copy_(z.maximum(z_min).minimum(z_max))
+        
+    return img
 
 
 
-i = 0 # Iteration counter
-j = 0 # Zoom video frame counter
-p = 1 # Phrase counter
-smoother = 0 # Smoother counter
-this_video_frame = 0 # for video styling
+
 
 # Messing with learning rate / optimisers
 #variable_lr = args.step_size
 #optimiser_list = [['Adam',0.075],['AdamW',0.125],['Adagrad',0.2],['Adamax',0.125],['DiffGrad',0.075],['RAdam',0.125],['RMSprop',0.02]]
 
 # Do it
+
+
+'''
 try:
     with tqdm() as pbar:
         while True:            
@@ -830,23 +832,23 @@ try:
                         embed = perceptor.encode_text(clip.tokenize(txt).to(device)).float()
                         pMs.append(Prompt(embed, weight, stop).to(device))
                                         
-                    '''
+                    ' ' '
                     # Smooth test
                     smoother = args.zoom_frequency * 15 # smoothing over x frames
                     variable_lr = args.step_size * 0.25
                     opt = get_opt(args.optimiser, variable_lr)
-                    '''
+                    ' ' '
                     
                     p += 1
             
-            '''
+            ' ' '
             if smoother > 0:
                 if smoother == 1:
                     opt = get_opt(args.optimiser, args.step_size)
                 smoother -= 1
-            '''
+            ' ' '
             
-            '''
+            ' ' '
             # Messing with learning rate / optimisers
             if i % 225 == 0 and i > 0:
                 variable_optimiser_item = random.choice(optimiser_list)
@@ -855,7 +857,7 @@ try:
                 
                 opt = get_opt(variable_optimiser, variable_lr)
                 print("New opt: %s, lr= %f" %(variable_optimiser,variable_lr)) 
-            '''
+            ' ' '
             
 
             # Training time
@@ -911,6 +913,65 @@ try:
             pbar.update()
 except KeyboardInterrupt:
     pass
+'''
+            
+
+import logging
+import numpy as np
+import os
+import subprocess
+import ffmpeg
+
+
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+def start_ffmpeg_process2(key, width, height):
+    logger.info('Starting ffmpeg process2')
+    args = f'ffmpeg -re -f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 -f rawvideo -s {width}x{height} -pix_fmt rgb24 -i pipe: -c:v libx264 -preset veryfast -b:v 3000k -maxrate 3000k -bufsize 6000k -pix_fmt yuv420p -g 50 -c:a aac -b:a 160k -ac 2 -ar 44100 -f flv rtmp://a.rtmp.youtube.com/live2/{key}'
+    return subprocess.Popen(args.split(), stdin=subprocess.PIPE)
+
+def write_frame(process2, frame):
+    logger.debug('Writing frame')
+    process2.stdin.write(
+        frame
+        .astype(np.uint8)
+        .tobytes()
+    )
+
+def run(key, process_frame, width, height):
+
+    process2 = start_ffmpeg_process2(key, width, height)
+    
+    i = 1 # Iteration counter
+    j = 0 # Zoom video frame counter
+    p = 1 # Phrase counter
+    smoother = 0 # Smoother counter
+    this_video_frame = 0 # for video styling
+    inner = 0
+    out_frame = process_frame(i)#(in_frame)
+    while True:
+        logger.debug('Processing frame')
+        if inner % 9 == 0:
+            out_frame = process_frame(i)*0.05 + out_frame*0.95 #(in_frame)
+            i += 1
+        write_frame(process2, out_frame)
+        inner += 1
+
+    logger.info('Waiting for ffmpeg process2')
+    process2.stdin.close()
+    process2.wait()
+
+    logger.info('Done')
+
+
+try:
+    run(args.streamkey, train, default_image_size, default_image_size)
+except ffmpeg.Error as e:
+    print('stdout:', e.stdout.decode('utf8'))
+    print('stderr:', e.stderr.decode('utf8'))
+    raise e
+
 
 # All done :)
 
